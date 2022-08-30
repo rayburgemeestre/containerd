@@ -18,12 +18,12 @@ package config
 
 import (
 	"fmt"
-	"path/filepath"
-	"strings"
-
 	"github.com/imdario/mergo"
 	"github.com/pelletier/go-toml"
 	"github.com/sirupsen/logrus"
+	"path/filepath"
+	"reflect"
+	"strings"
 
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/plugin"
@@ -168,6 +168,27 @@ type ProxyPlugin struct {
 	Address string `toml:"address"`
 }
 
+// TomlTreeTransformer provides custom merge logic for mergo.Merge
+type TomlTreeTransformer struct {
+}
+
+// Transformer provides logic for the toml.Tree type to ensure elements present only in the dest toml.Tree are kept
+func (t TomlTreeTransformer) Transformer(typ reflect.Type) func(dst, src reflect.Value) error {
+	if typ == reflect.TypeOf(toml.Tree{}) {
+		return func(dst, src reflect.Value) error {
+			dest := dst.Interface().(toml.Tree)
+			source := src.Interface().(toml.Tree)
+			for k, v := range dest.Values() {
+				if !source.Has(k) {
+					source.Set(k, v)
+				}
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
 // Decode unmarshals a plugin specific configuration by plugin id
 func (c *Config) Decode(p *plugin.Registration) (interface{}, error) {
 	id := p.URI()
@@ -287,17 +308,14 @@ func resolveImports(parent string, imports []string) ([]string, error) {
 // []{"1"}      []{"2"}     []{"1","2"}
 // []{"1"}      []{}        []{"1"}
 // Maps merged by keys, but values are replaced entirely.
+// Plugins (toml.Tree types) are also merged.
 func mergeConfig(to, from *Config) error {
-	err := mergo.Merge(to, from, mergo.WithOverride, mergo.WithAppendSlice)
+	err := mergo.Merge(to, from, mergo.WithOverride, mergo.WithAppendSlice, mergo.WithTransformers(TomlTreeTransformer{}))
 	if err != nil {
 		return err
 	}
 
 	// Replace entire sections instead of merging map's values.
-	for k, v := range from.Plugins {
-		to.Plugins[k] = v
-	}
-
 	for k, v := range from.StreamProcessors {
 		to.StreamProcessors[k] = v
 	}

@@ -218,3 +218,106 @@ func TestDecodePluginInV1Config(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, true, pluginConfig["shim_debug"])
 }
+
+func TestMergingTwoPluginConfigs(t *testing.T) {
+	// Configuration that customizes the cni bin_dir
+	data1 := `
+[plugins."io.containerd.grpc.v1.cri".cni]
+    bin_dir = "/cm/local/apps/kubernetes/current/bin/cni"
+`
+	// Configuration that customizes the registry config_path
+	data2 := `
+[plugins."io.containerd.grpc.v1.cri".registry]
+    config_path = "/cm/local/apps/containerd/var/etc/certs.d"
+`
+	// Write both to disk
+	tempDir := t.TempDir()
+	err := os.WriteFile(filepath.Join(tempDir, "data1.toml"), []byte(data1), 0600)
+	assert.NoError(t, err)
+	err = os.WriteFile(filepath.Join(tempDir, "data2.toml"), []byte(data2), 0600)
+	assert.NoError(t, err)
+
+	// Parse them both
+	var out Config
+	var out2 Config
+	err = LoadConfig(filepath.Join(tempDir, "data1.toml"), &out)
+	assert.NoError(t, err)
+	err = LoadConfig(filepath.Join(tempDir, "data2.toml"), &out2)
+	assert.NoError(t, err)
+
+	// Merge into one config
+	err = mergeConfig(&out, &out2)
+	assert.NoError(t, err)
+
+	// Test if all values are present
+	cri_plugin := out.Plugins["io.containerd.grpc.v1.cri"]
+	assert.Equal(t, cri_plugin.ToMap(), map[string]interface{}{
+		// originating from first config
+		"cni": map[string]interface{}{
+			"bin_dir": "/cm/local/apps/kubernetes/current/bin/cni",
+		},
+		// originating from second config
+		"registry": map[string]interface{}{
+			"config_path": "/cm/local/apps/containerd/var/etc/certs.d",
+		},
+	})
+}
+
+func TestMergingTwoPluginConfigsOverwrite(t *testing.T) {
+	// Configuration that customizes the cni bin_dir, and registry certs config_path
+	data1 := `
+[plugins."io.containerd.grpc.v1.cri".cni]
+    bin_dir = "/cm/local/apps/kubernetes/current/bin/cni"
+`
+	// Configuration that customizes the default runtime for containerd
+	data2 := `
+[plugins."io.containerd.grpc.v1.cri".cni]
+    conf_dir = "/tmp"
+`
+	// Write both to disk
+	tempDir := t.TempDir()
+	err := os.WriteFile(filepath.Join(tempDir, "data1.toml"), []byte(data1), 0600)
+	assert.NoError(t, err)
+	err = os.WriteFile(filepath.Join(tempDir, "data2.toml"), []byte(data2), 0600)
+	assert.NoError(t, err)
+
+	// Parse them both
+	var out Config
+	var out2 Config
+	err = LoadConfig(filepath.Join(tempDir, "data1.toml"), &out)
+	assert.NoError(t, err)
+	err = LoadConfig(filepath.Join(tempDir, "data2.toml"), &out2)
+	assert.NoError(t, err)
+
+	// Merge into one config
+	err = mergeConfig(&out, &out2)
+	assert.NoError(t, err)
+
+	// Test if all values are present
+	cri_plugin := out.Plugins["io.containerd.grpc.v1.cri"]
+	assert.Equal(t, cri_plugin.ToMap(), map[string]interface{}{
+		// originating from first config
+		"cni": map[string]interface{}{
+			"conf_dir": "/tmp",
+			// bin_dir is not preserved
+		},
+	})
+
+	// Restore first config
+	err = LoadConfig(filepath.Join(tempDir, "data1.toml"), &out)
+	assert.NoError(t, err)
+
+	// Test the other way around
+	err = mergeConfig(&out2, &out)
+	assert.NoError(t, err)
+
+	// Test if all values are present
+	cri_plugin = out.Plugins["io.containerd.grpc.v1.cri"]
+	assert.Equal(t, cri_plugin.ToMap(), map[string]interface{}{
+		// originating from first config
+		"cni": map[string]interface{}{
+			"bin_dir": "/cm/local/apps/kubernetes/current/bin/cni",
+			// conf_dir is not preserved
+		},
+	})
+}
